@@ -1,35 +1,3 @@
-import 'dart:async';
-import 'package:shared_preferences/shared_preferences.dart';
-
-/// Use to save feathers js token
-const String FEATHERSJS_ACCESS_TOKEN = "FEATHERSJS_ACCESS_TOKEN";
-
-/// Socketio Connected
-class Connected {}
-
-/// Socketio Disconnected
-class DisConnected {}
-
-/// Utilities for FlutterFeathersJs
-class FeatherjsHelper {
-  late SharedPreferences prefs;
-  FeatherjsHelper();
-
-  /// Store JWT for reAuth() purpose
-  Future<bool> setAccessToken({required String token}) async {
-    prefs = await SharedPreferences.getInstance();
-
-    return await prefs.setString(FEATHERSJS_ACCESS_TOKEN, token);
-  }
-
-  /// Get the early stored JWT for reAuth() purpose
-  Future<String?> getAccessToken() async {
-    prefs = await SharedPreferences.getInstance();
-
-    return prefs.getString(FEATHERSJS_ACCESS_TOKEN);
-  }
-}
-
 /// FeatherJsErrorType
 enum FeatherJsErrorType {
   /// This error come from  your feathers js server
@@ -132,27 +100,8 @@ class FeatherJsError implements Exception {
   });
 
   FeatherJsErrorType type;
-
   dynamic error;
-
-  StackTrace? _stackTrace;
-
-  // ignore: unnecessary_getters_setters
-  set stackTrace(StackTrace? stack) => _stackTrace = stack;
-
-  // ignore: unnecessary_getters_setters
-  StackTrace? get stackTrace => _stackTrace;
-
   String get message => (error?.toString() ?? '');
-
-  @override
-  String toString() {
-    var msg = 'FeatherJsError [$type]: $message';
-    if (_stackTrace != null) {
-      msg += '\n$stackTrace';
-    }
-    return msg;
-  }
 }
 
 /// Transform error sent by feathers js to local error type
@@ -212,13 +161,3 @@ FeatherJsError errorCode2FeatherJsError(error) {
   }
   return new FeatherJsError(error: error, type: type);
 }
-
-/// Feathers Js realtime event data
-class FeathersJsEventData<T> {
-  FeathersJsEventType? type;
-  T? data;
-  FeathersJsEventData({this.type, this.data});
-}
-
-/// Feathers Js realtime event type
-enum FeathersJsEventType { updated, patched, created, removed }

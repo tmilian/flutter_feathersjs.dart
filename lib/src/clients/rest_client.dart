@@ -2,58 +2,52 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' as Foundation;
+import 'package:flutter_feathersjs/flutter_feathersjs.dart';
 
-import 'featherjs_client_base.dart';
-import 'helper.dart';
+class RestClient {
+  Dio dio;
+  Storage tokenStorage;
 
-///Feathers Js rest client for rest api call
-/// `Note`: You get exactly what feathers server send
-class RestClient extends FlutterFeathersjsBase {
-  ///Dio as http client
-  late Dio dio;
-
-  /// Feathers js helper
-  late FeatherjsHelper utils;
-
-  //Using singleton to ensure we use the same instance of it accross our app
-  static final RestClient _restClient = RestClient._internal();
-
-  factory RestClient() {
-    return _restClient;
-  }
-  RestClient._internal();
-
-  /// Initialize FlutterFeathersJs with the server's baseUrl and some extraHeaders
-  init({required String baseUrl, Map<String, dynamic>? extraHeaders}) {
-    utils = new FeatherjsHelper();
-
-    //Setup Http client
-    this.dio = Dio(BaseOptions(
-      baseUrl: baseUrl,
-      headers: extraHeaders,
-    ));
-
-    this
-        .dio
-        .interceptors
-        .add(InterceptorsWrapper(onRequest: (options, handler) async {
-          // Setting on every request the Bearer Token in the header
-          var oldToken = await utils.getAccessToken();
-
-          // This is necessary to send on every request the Bearer token to be authenticated
-          this.dio.options.headers["Authorization"] = "Bearer $oldToken";
-          return handler.next(options);
-        }, onResponse: (response, handler) {
-          // Return exactly what response feather send
-          return handler.next(response);
-        }, onError: (DioError e, handler) {
-          if (!Foundation.kReleaseMode) {
-            print("An error occured in Resclient");
-            print(e.response);
+  RestClient({
+    required String baseUrl,
+    Map<String, dynamic>? extraHeaders,
+    required this.tokenStorage,
+  }) : dio = Dio(BaseOptions(baseUrl: baseUrl, headers: extraHeaders)) {
+    dio.interceptors.add(
+      InterceptorsWrapper(onRequest: (options, handler) async {
+        var token = await tokenStorage.getAccessToken();
+        this.dio.options.headers["Authorization"] = "Bearer $token";
+        return handler.next(options);
+      }, onResponse: (response, handler) {
+        return handler.next(response);
+      }, onError: (DioError error, handler) async {
+        if (error.response?.statusCode == 401 &&
+            error.requestOptions.path != '/authentication') {
+          dio.lock();
+          dio.interceptors.requestLock.lock();
+          try {
+            await refreshToken();
+          } catch (e) {
+            String? accessToken = await tokenStorage.getAccessToken();
+            var requestOptions = error.requestOptions;
+            requestOptions.headers['Authorization'] = 'Bearer $accessToken';
+            final opts = Options(method: requestOptions.method);
+            final response = await dio.request(
+              '${error.requestOptions.baseUrl}/${requestOptions.path}',
+              options: opts,
+              cancelToken: requestOptions.cancelToken,
+              onReceiveProgress: requestOptions.onReceiveProgress,
+              data: requestOptions.data,
+              queryParameters: requestOptions.queryParameters,
+            );
+            return handler.resolve(response);
           }
-
-          return handler.next(e);
-        }));
+          dio.unlock();
+          dio.interceptors.requestLock.unlock();
+        }
+        return handler.next(error);
+      }),
+    );
   }
 
   /// `Authenticate with JWT`
@@ -69,24 +63,22 @@ class RestClient extends FlutterFeathersjsBase {
     bool isReauthenticate = false;
 
     //Getting the early stored rest access token and send the request by using it
-    var oldToken = await utils.getAccessToken();
+    var oldToken = await tokenStorage.getAccessToken();
 
     ///If an oldToken exist really, try to chect if it is still validated
     this.dio.options.headers["Authorization"] = "Bearer $oldToken";
     try {
-      // Try to retrieve the service which normaly don't accept anonimous user
-      var response =
-          await this.dio.get("/$serviceName", queryParameters: {"\$limit": 1});
-
+      var response = await this.dio.get(
+        "/$serviceName",
+        queryParameters: {"\$limit": 1},
+      );
       if (!Foundation.kReleaseMode) {
         print(response);
       }
-
       if (response.statusCode == 401) {
         if (!Foundation.kReleaseMode) {
           print("jwt expired or jwt malformed");
         }
-
         featherJsError = new FeatherJsError(
             type: FeatherJsErrorType.IS_JWT_EXPIRED_ERROR,
             error: "Must authenticate again because Jwt has expired");
@@ -135,80 +127,105 @@ class RestClient extends FlutterFeathersjsBase {
   /// But ensure that `userNameFieldName` is correct with your chosed `strategy`
   ///
   /// By default this will be `email`and the strategy `local`
-  Future<dynamic> authenticate(
-      {strategy = "local",
-      required String? userName,
-      required String? password,
-      String userNameFieldName = "email"}) async {
-    Completer asyncTask = Completer<dynamic>();
-
-    /// Final response of the server
-    late var response;
-    FeatherJsError? featherJsError;
-
+  Future<dynamic> authenticate({
+    strategy = "local",
+    required String? userName,
+    required String? password,
+    String userNameFieldName = "email",
+  }) async {
     try {
-      //Making http request to get auth token
-      response = await this.dio.post("/authentication", data: {
-        "strategy": strategy,
-        "$userNameFieldName": userName,
-        "password": password
-      });
-
-      if (response.data['accessToken'] != null) {
-        // Case when the world is perfect: no error
-        utils.setAccessToken(token: response.data['accessToken']);
+      var resp = await this.dio.post(
+        "/authentication",
+        data: {
+          "$userNameFieldName": userName,
+          "password": password,
+          "strategy": strategy,
+        },
+      );
+      if (resp.data['accessToken'] != null && resp.data['user'] != null) {
+        await tokenStorage.setAccessToken(token: resp.data['accessToken']);
+        await tokenStorage.setUser(user: resp.data['user']);
       } else {
-        featherJsError = new FeatherJsError(
+        throw FeatherJsError(
             type: FeatherJsErrorType.IS_UNKNOWN_ERROR,
-            error: response.data["message"]);
+            error: resp.data["message"]);
       }
+      if (resp.data['refreshToken'] != null) {
+        await tokenStorage.setRefreshToken(token: resp.data['refreshToken']);
+      }
+      return resp.data;
     } on DioError catch (e) {
-      // Error in the request
       if (e.response != null) {
         if (e.response?.data["code"] == 401) {
-          //This is useful to display to end user why auth failed
-          //With 401: it will be either Invalid credentials or strategy error
           if (e.response?.data["message"] == "Invalid login") {
-            featherJsError = new FeatherJsError(
+            throw FeatherJsError(
                 type: FeatherJsErrorType.IS_INVALID_CREDENTIALS_ERROR,
                 error: e.response?.data["message"]);
           } else {
-            featherJsError = new FeatherJsError(
+            throw FeatherJsError(
                 type: FeatherJsErrorType.IS_INVALID_STRATEGY_ERROR,
                 error: e.response?.data["message"]);
           }
         } else {
-          featherJsError = new FeatherJsError(
+          throw FeatherJsError(
               type: FeatherJsErrorType.IS_UNKNOWN_ERROR, error: e);
         }
       } else {
-        new FeatherJsError(
-            error: e.message, type: FeatherJsErrorType.IS_CANNOT_SEND_REQUEST);
+        throw FeatherJsError(
+          error: e.message,
+          type: FeatherJsErrorType.IS_CANNOT_SEND_REQUEST,
+        );
       }
     }
+  }
 
-    if (featherJsError != null) {
-      // Complete with error
-      asyncTask.completeError(featherJsError);
-    } else {
-      // Send directly user if all thing is good
-      asyncTask.complete(response.data["user"]);
+  /// Authenticate with username & password
+  ///
+  /// @params `username` can be : email, phone, etc;
+  ///
+  /// But ensure that `userNameFieldName` is correct with your chosed `strategy`
+  ///
+  /// By default this will be `email`and the strategy `local`
+  Future<dynamic> refreshToken() async {
+    var refreshToken = await tokenStorage.getRefreshToken();
+    try {
+      var response = await this.dio.post(
+        "/authentication",
+        data: {
+          "refreshToken": refreshToken,
+          "action": "refresh",
+        },
+      );
+      if (response.data['accessToken'] != null &&
+          response.data['refreshToken'] != null &&
+          response.data['user'] != null) {
+        await tokenStorage.setAccessToken(token: response.data['accessToken']);
+        await tokenStorage.setRefreshToken(
+          token: response.data['refreshToken'],
+        );
+        await tokenStorage.setUser(user: response.data['user']);
+      } else {
+        throw "Malformed refresh token";
+      }
+      return response.data;
+    } catch (e) {
+      throw e;
     }
-
-    return asyncTask.future;
   }
 
   /// `GET /serviceName`
   ///
   /// Retrieves a list of all matching the `query` resources from the service
   ///
-  Future<dynamic> find(
-      {required String serviceName,
-      required Map<String, dynamic> query}) async {
+  Future<dynamic> find({
+    required String serviceName,
+    required Map<String, dynamic> query,
+  }) async {
     try {
-      var response =
-          await this.dio.get("/$serviceName", queryParameters: query);
-
+      var response = await this.dio.get(
+            "/$serviceName",
+            queryParameters: query,
+          );
       if (response.data != null) {
         return response.data;
       } else {
@@ -230,8 +247,10 @@ class RestClient extends FlutterFeathersjsBase {
   ///
   /// Retrieve a single resource from the service with an `_id`
   ///
-  Future<dynamic> get(
-      {required String serviceName, required String objectId}) async {
+  Future<dynamic> get({
+    required String serviceName,
+    required String objectId,
+  }) async {
     try {
       var response = await this.dio.get("/$serviceName/$objectId");
 
@@ -275,12 +294,13 @@ class RestClient extends FlutterFeathersjsBase {
   ///
   ///
   ///
-  Future<dynamic> create(
-      {required String serviceName,
-      required Map<String, dynamic> data,
-      containsFile = false,
-      fileFieldName = "file",
-      List<Map<String, String>>? files}) async {
+  Future<dynamic> create({
+    required String serviceName,
+    required Map<String, dynamic> data,
+    containsFile = false,
+    fileFieldName = "file",
+    List<Map<String, String>>? files,
+  }) async {
     var response;
 
     if (!containsFile) {
@@ -351,13 +371,14 @@ class RestClient extends FlutterFeathersjsBase {
   ///
   ///
   ///
-  Future<dynamic> update(
-      {required String serviceName,
-      required String objectId,
-      required Map<String, dynamic> data,
-      containsFile = false,
-      fileFieldName = "file",
-      List<Map<String, String>>? files}) async {
+  Future<dynamic> update({
+    required String serviceName,
+    required String objectId,
+    required Map<String, dynamic> data,
+    containsFile = false,
+    fileFieldName = "file",
+    List<Map<String, String>>? files,
+  }) async {
     var response;
 
     if (!containsFile) {
@@ -436,7 +457,7 @@ class RestClient extends FlutterFeathersjsBase {
   ///
   ///
   ///
-  Future<dynamic> patch(
+  Future<dynamic> patch<T>(
       {required String serviceName,
       required String objectId,
       required Map<String, dynamic> data,
@@ -500,8 +521,10 @@ class RestClient extends FlutterFeathersjsBase {
   /// `DELETE /serviceName/_id`
   ///
   /// Remove a single  resource with `_id = objectId `:
-  Future<dynamic> remove(
-      {required String serviceName, required String objectId}) async {
+  Future<dynamic> remove({
+    required String serviceName,
+    required String objectId,
+  }) async {
     try {
       var response = await this.dio.delete(
             "/$serviceName/$objectId",

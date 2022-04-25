@@ -2,31 +2,62 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_feathersjs/flutter_feathersjs.dart';
 
 import 'fixtures.dart';
+import 'mock_token_storage.dart';
+
+var tokenStorage = MockTokenStorage();
+FlutterFeathersjs flutterFeathersjs = FlutterFeathersjs(
+  baseUrl: BASE_URL,
+  tokenStorage: tokenStorage,
+);
 
 void main() async {
-  FlutterFeathersjs flutterFeathersjs = FlutterFeathersjs()
-    ..init(baseUrl: BASE_URL);
-
-  test(' \n Authenticate user \n ', () async {
+  test('Authenticate user', () async {
     try {
       var response = await flutterFeathersjs.authenticate(
-          userName: user["email"], password: user["password"]);
-      print("\n  The authenticated  user is: \n");
+        userName: user["email"],
+        password: user["password"],
+      );
       print(response);
-    } on FeatherJsError catch (e) {
-      if (e.type == FeatherJsErrorType.IS_INVALID_CREDENTIALS_ERROR) {
-        print("Invalid credentials");
-      } else if (e.type == FeatherJsErrorType.IS_INVALID_STRATEGY_ERROR) {
-        print("Invalid strategy");
-      } else if (e.type == FeatherJsErrorType.IS_GENERAL_ERROR) {
-        print("Server error");
-      } else {
-        print("Unknown error");
-        print(e.type);
-        print(e.message);
-      }
-    } on Error catch (e) {
-      print("Bad error here");
+      expect(response['accessToken'], await tokenStorage.getAccessToken());
+    } catch (e) {
+      print(e);
+    }
+  });
+
+  test('Refresh token', () async {
+    try {
+      var response = await flutterFeathersjs.rest.refreshToken();
+      print(response);
+      expect(response['refreshToken'], await tokenStorage.getRefreshToken());
+    } catch (e) {
+      print(e);
+    }
+  });
+
+  test('User service via Socket', () async {
+    try {
+      var user = await tokenStorage.getUser();
+      var response = await flutterFeathersjs.socketio.get(
+        serviceName: 'users',
+        objectId: user?['_id'],
+      );
+      print(response);
+      expect(response['_id'], user?['_id']);
+    } catch (e) {
+      print(e);
+    }
+  });
+
+  test('User service via Rest', () async {
+    try {
+      var user = await tokenStorage.getUser();
+      var response = await flutterFeathersjs.rest.get(
+        serviceName: 'users',
+        objectId: user?['_id'],
+      );
+      print(response);
+      expect(response['_id'], user?['_id']);
+    } catch (e) {
       print(e);
     }
   });
