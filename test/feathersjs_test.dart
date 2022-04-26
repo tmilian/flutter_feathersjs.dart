@@ -14,7 +14,7 @@ void main() async {
   test('Authenticate user', () async {
     try {
       var response = await flutterFeathersjs.authenticate(
-        userName: user["email"],
+        username: user["email"],
         password: user["password"],
       );
       print(response);
@@ -26,7 +26,7 @@ void main() async {
 
   test('Refresh token', () async {
     try {
-      var response = await flutterFeathersjs.rest.refreshToken();
+      var response = await flutterFeathersjs.refreshToken();
       print(response);
       expect(response['refreshToken'], await tokenStorage.getRefreshToken());
     } catch (e) {

@@ -74,8 +74,7 @@ class SocketioClient {
     String? token = await tokenStorage.getAccessToken();
     Completer asyncTask = Completer<dynamic>();
     FeatherJsError? featherJsError;
-    bool isReauthenticate = false;
-
+    bool authenticated = false;
     _socket.emitWithAck('create', [
       'authentication',
       <String, dynamic>{
@@ -83,36 +82,23 @@ class SocketioClient {
         'accessToken': token,
       }
     ], ack: (dataResponse) {
-      if (!Foundation.kReleaseMode) {
-        print("Receive response from server on JWT request");
-      }
-
-      //Check whether auth is OK
       if (dataResponse is List) {
-        if (!Foundation.kReleaseMode) {
-          print("Authentication process is ok with JWT");
-        }
-        isReauthenticate = true;
-        //Every emit or on will be authed
+        authenticated = true;
         this._socket.io.options['extraHeaders'] = {
           'Authorization': "Bearer $token"
         };
       } else {
-        // On error
-        if (!Foundation.kReleaseMode) {
-          print("Authentication process failed with JWT");
-        }
-        featherJsError = new FeatherJsError(
-            type: FeatherJsErrorType.IS_JWT_TOKEN_ERROR, error: dataResponse);
+        featherJsError = FeatherJsError(
+          type: FeatherJsErrorType.JWT_TOKEN_ERROR,
+          error: dataResponse,
+        );
       }
       if (featherJsError != null) {
-        asyncTask.completeError(featherJsError!); //Complete with error
+        asyncTask.completeError(featherJsError!);
       } else {
-        // Complete with success
-        asyncTask.complete(isReauthenticate);
+        asyncTask.complete(authenticated);
       }
     });
-
     return asyncTask.future;
   }
 
@@ -301,7 +287,7 @@ class SocketioClient {
         ));
       } catch (e) {
         eventBus.fire(new FeatherJsError(
-          type: FeatherJsErrorType.IS_DESERIALIZATION_ERROR,
+          type: FeatherJsErrorType.DESERIALIZATION_ERROR,
           error: e,
         ));
       }
@@ -317,7 +303,7 @@ class SocketioClient {
         ));
       } catch (e) {
         eventBus.fire(new FeatherJsError(
-          type: FeatherJsErrorType.IS_DESERIALIZATION_ERROR,
+          type: FeatherJsErrorType.DESERIALIZATION_ERROR,
           error: e,
         ));
       }
@@ -331,7 +317,7 @@ class SocketioClient {
             data: object, type: FeathersJsEventType.removed));
       } catch (e) {
         eventBus.fire(new FeatherJsError(
-            type: FeatherJsErrorType.IS_DESERIALIZATION_ERROR, error: e));
+            type: FeatherJsErrorType.DESERIALIZATION_ERROR, error: e));
       }
     });
 
@@ -343,7 +329,7 @@ class SocketioClient {
             data: object, type: FeathersJsEventType.created));
       } catch (e) {
         eventBus.fire(new FeatherJsError(
-            type: FeatherJsErrorType.IS_DESERIALIZATION_ERROR, error: e));
+            type: FeatherJsErrorType.DESERIALIZATION_ERROR, error: e));
       }
     });
     return eventBus.on<FeathersJsEventData<T>>();
